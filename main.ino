@@ -4,6 +4,8 @@
  * 
  * // datasheet: http://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-7810-Automotive-Microcontrollers-ATmega328P_Datasheet.pdf
  */
+#include <avr/interrupt.h>
+#include <avr/io.h>
 
 #define DEADBAND_VARIANCE_NEAR  100 //ask Angel about what this value should be
 #define DEADBAND_VARIANCE_FAR   300 //ask Angel about what this value should be
@@ -27,10 +29,14 @@
 #define GLED    PC1
 #define YLED    PC2
 
-/* sensor_val is stored as a value 0-5000 representing 0-5V */
-volatile uint32_t sensor_val = 0;
-volatile bool ISR_generated = false;
-volatile unsigned char counter = 0;
+/* analogVal is stored as a value 0-5000 representing 0-5V */
+volatile uint32_t sensor_val;
+volatile uint8_t ISR_generated = 0;
+uint16_t sensor_val_sum = 0;
+uint16_t sensor_val_avg = 0;
+volatile uint8_t counter = 0;
+const uint8_t sensor_arr_length = 8;
+uint16_t sensor_val_arr[sensor_arr_length] = {};
 enum digits {digit1, digit2, digit3, digit4};
 
 /* 
@@ -40,50 +46,19 @@ enum digits {digit1, digit2, digit3, digit4};
 void display_seven_segment(unsigned char number, unsigned char place) {
     PORTD &= PORTD_DEFAULT;
     PORTB &= PORTB_DEFAULT;
-    PORTB |= 1 << place + 3;
-
-    /*switch(place) {
-        case digit1: 
-            //turn off DP2, 3, 4
-            PORTD &= B00000011;
-            PORTB &= B11000000;
-            //turn on DP1.
-            PORTB |=  B00000100; //D10
-            break;
-        case digit2: 
-            //turn off DP1, 3, 4
-            PORTD &= B00000011;
-            PORTB &= B11000000;
-            //turn on DP2
-            PORTB |= B00001000; //D11
-            break;
-        case digit3: 
-            //turn off DP1, 2, 4
-            PORTD &= B00000011;
-            PORTB &= B11000000;
-            //turn on DP3
-            PORTB |= B00010000; //D12
-            break;
-        case digit4: 
-            //turn off DP1, 2, 3
-            PORTD &= B00000011;
-            PORTB &= B11000000;
-            //turn on DP4
-            PORTB |= B00100000; //D13
-            break;
-    }*/
-
+    PORTB |= (1 << place + 2) | (place == digit1 ? 1 << SEG_DP : 0); 
+  
     /* Segments A-F are on D and G-D4 are on B */
     switch(number) {
         case 0:
             PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F);
             break;
         case 1:
-            PORTD |= (1<<SEG_A) | (1<<SEG_B);
+            PORTD |= (1<<SEG_B) | (1<<SEG_C);
             break;
         case 2:
             PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_D) | (1<<SEG_E);
-            PORTB |= (1<<SEG_G);
+            PORTB |= (1<<SEG_F) | (1<<SEG_G);
             break;
         case 3:
             PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D);
@@ -105,12 +80,12 @@ void display_seven_segment(unsigned char number, unsigned char place) {
             PORTD |= PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C);
             break;
         case 8:
-            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F)
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F);
             PORTB |= (1<<SEG_G);
             break;
         case 9:
             PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_F);
-            PORTB |= (1<<SEG_G);;
+            PORTB |= (1<<SEG_G);
             break;
         case DP:
             PORTD |= 1<<SEG_DP;
@@ -169,16 +144,40 @@ void display_seven_segment(unsigned char number, unsigned char place) {
  * ADC complete interrupt generated if ADIE and the I-bit are set
  */
 void setup() {
+    Serial.begin(9600);
     /* Digital Input Pin Configuration */
     DDRD |= B11111100;
     DDRB |= B00111111;
     DDRC  = B00000111; //LEDs
     
     /* ADC Configuration */
-    // ADMUX  = B01100111; //ADC7
-    // ADCSRB = B00000000;
-    // ADCSRA = B11001111;
-    // DIDR0  = B00111111;
+    PRR     &= B11111110; //Bit 0: ADC Power reduction
+    ADMUX   &= B11011111; //Set ADLAR to 0 to right adjust result. ADCL lower 8 bits, ADCH higher 2
+    ADMUX   |= B01000000; //Set bits 6-7 to set reference voltage to gnd (01)
+    ADMUX   &= B11110000; //clear its 0-3 to set analog input
+    ADMUX   |= B00000111; //set 0-3 to 0111 to use ADC7
+    ADCSRA  |= B10000000; //Set ADEN to enable ADC. Takes 12 ADC clock cycles
+    //ADCSRA  |= B00100000; //set ADATE in to enable auto triggering. should i stop this?
+    ADCSRB  &= B11111000; //clear ADTS2..0 in ADCSRB to set trigger mode to free running
+    ADCSRA  |= B00000111; //sets ADC prescaler to 128 - 16000KHz/128=125KHz
+    ADCSRA  |= B00001000; //sets ADIE to enable ADC interrupt
+#ifndef Arduino_h
+    sei(); //enables global interrupts
+#endif
+    //start conversion
+    ISR_generated = 0;
+    sensor_val = 0;
+    ADCSRA  |= B01000000; //set ADSC to 1 to start ADC conversion
+
+    DIDR0   = B00111111; //this could be an issue
+
+    /* Get an initial value to display but get a sum that can be averaged */
+    while(counter < sensor_arr_length) {
+        if(ISR_generated) {
+            sensor_val_sum += sensor_val_arr[counter%sensor_arr_length] = sensor_val;
+            counter++;
+        }
+    }
 }
 
 /******************************************************************************/
@@ -186,35 +185,66 @@ void setup() {
 /*
  * Generated once Analog->Digital Conversion Complete
  */
-// ISR(ADC_vect) {
-//     /* Only respond to updates to Channel ADC7 */
-//     if (ADMUX & B00000111 && B00000111) {
-//         sensor_val = (ADCH << 8 | ADCL)*5000/1024;
-//         ADCSRA |= B01000000; /* Reset ADC start conversion bit*/
-//         ISR_generated = true;
-//     }
-// }
+ISR(ADC_vect) {
+    /* Read ADCL before ADCH */
+    sensor_val = ((ADCL) | ADCH << 8)/**5000/1024*/; //low must be read first
+    
+    sensor_val_sum -= sensor_val_arr[counter%sensor_arr_length];
+    sensor_val_arr[counter%sensor_arr_length] = sensor_val;
+    sensor_val_sum += sensor_val;
+    sensor_val_avg = sensor_val_sum/sensor_arr_length;
+    counter++;
+
+    ISR_generated = 1;
+
+    ADCSRA |= B01000000; //reset ADSC ADC start conversion bit. not needed bc code is free running
+}
 
 /******************************************************************************/
-
+uint8_t iter = 0;
+uint8_t loop_counter = 0;
 //Do i want to use a moving average or exponential filter on sensor_val
 void loop() {
-    // if (ISR_generated) {
-    //     ISR_generated = false;
-    //     /* turn on the correct LED */
-    //     //could potentially use some clever bit shifts, boolean algebra, and arithmetic to eliminate ternary
-    //     PORTC = sensor_val > 2500 + DEADBAND_VARIANCE_FAR  && 
-    //             sensor_val < 2500 - DEADBAND_VARIANCE_FAR  ? B00000001 : //red
-    //             sensor_val > 2500 + DEADBAND_VARIANCE_NEAR && 
-    //             sensor_val < 2500 - DEADBAND_VARIANCE_NEAR ? B00000010 : //yellow
-    //                                                          B00000100;  //green
-    // }
-    sensor_val = 4888; //temporary
-    //these 4 lines could be 1 but idk if it would be more efficient or not
-    display_seven_segment(sensor_val%10, digit1); //digit 1
-    display_seven_segment(sensor_val%100/10, digit2); //digit 2
-    display_seven_segment(sensor_val%1000/100, digit3); //digit 3
-    display_seven_segment(sensor_val/1000, digit4); //digit 4
+    //if (ISR_generated) {
+    //    ISR_generated = 0;
+        
+        // sensor_val_sum -= sensor_val_arr[counter%sensor_arr_length];
+        // sensor_val_arr[counter%sensor_arr_length] = sensor_val;
+        // sensor_val_sum += sensor_val;
+        // sensor_val_avg = sensor_val_sum/sensor_arr_length;
+        // counter++;
 
-    counter = counter > 3 ? 0 : counter++;
+        /* turn on the correct LED */
+        //could potentially use some clever bit shifts, boolean algebra, and arithmetic to eliminate ternary
+        // PORTC = sensor_val > 2500 + DEADBAND_VARIANCE_FAR  && 
+        //         sensor_val < 2500 - DEADBAND_VARIANCE_FAR  ? B00000010 : //red
+        //         sensor_val > 2500 + DEADBAND_VARIANCE_NEAR && 
+        //         sensor_val < 2500 - DEADBAND_VARIANCE_NEAR ? B00000100 : //yellow
+        //                                                      B00000001;  //green
+        //these 4 lines could be 1 but idk if it would be more efficient or not
+    //}
+    //ADCSRA &= B10111111; //locks the adc out temporarily
+    /* A switch statement should even out the flickering */
+    //display_seven_segment(sensor_val_avg%1000/100, digit4);
+    //display_seven_segment(sensor_val_avg%10, digit2);
+    uint16_t dig4 = sensor_val_avg%10;
+    uint16_t dig3 = sensor_val_avg%100/10;
+    uint16_t dig2 = sensor_val_avg%1000/100;
+    uint16_t dig1 = sensor_val_avg/1000;
+    switch(loop_counter%4) {
+        case 0:
+            display_seven_segment(dig4, digit4);
+            break;
+        case 1:
+            display_seven_segment(dig3, digit3);
+            break;
+        case 2:
+            display_seven_segment(dig2, digit2);
+            break;
+        case 3:
+            display_seven_segment(dig1, digit1);
+            break;
+    }
+    //ADCSRA |= B01000000; //unlocks the ADC
+    loop_counter++;
 }
