@@ -22,7 +22,7 @@
 #define SEG_D1  PB2
 #define SEG_D2  PB3
 #define SEG_D3  PB4
-#define SEG_D4  PD5
+#define SEG_D4  PB5
 #define RLED    PC0     //Error: THE ORDERING OF THESE 3 IS INCORRECT
 #define GLED    PC1
 #define YLED    PC2
@@ -73,49 +73,47 @@ void display_seven_segment(unsigned char number, unsigned char place) {
             break;
     }*/
 
+    /* Segments A-F are on D and G-D4 are on B */
     switch(number) {
         case 0:
-            PORTD |= () | () | () | () | () | ();
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F);
             break;
         case 1:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B);
             break;
         case 2:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_D) | (1<<SEG_E);
+            PORTB |= (1<<SEG_G);
             break;
         case 3:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D);
+            PORTB |= (1<<SEG_G);
             break;
         case 4:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_F);
+            PORTB |= (1<<SEG_G);
             break;
         case 5:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_F);
+            PORTB |= (1<<SEG_G);
             break;
         case 6:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F);
+            PORTB |= (1<<SEG_G);
             break;
         case 7:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C);
             break;
         case 8:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_D) | (1<<SEG_E) | (1<<SEG_F)
+            PORTB |= (1<<SEG_G);
             break;
         case 9:
-            PORTD |= B______00;
-            PORTB |= B00______;
+            PORTD |= (1<<SEG_A) | (1<<SEG_B) | (1<<SEG_C) | (1<<SEG_F);
+            PORTB |= (1<<SEG_G);;
             break;
         case DP:
-            PORTD |= 1 << PD7;
+            PORTD |= 1<<SEG_DP;
             break;
     }
 }
